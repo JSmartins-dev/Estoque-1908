@@ -3,7 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Estoque Pro 1908 - v4.6</title>
+  <title>Estoque Pro 1908 - Cloud v5.0</title>
+  
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
   <style>
     :root {
       --primary: #003d5b; 
@@ -15,7 +19,6 @@
     }
 
     body { font-family: 'Inter', sans-serif; margin: 0; background-color: var(--bg); color: var(--text-main); line-height: 1.5; }
-    
     .logo-login { width: 180px; margin-bottom: 10px; }
     .logo-header { height: 40px; margin-right: 12px; }
 
@@ -47,7 +50,7 @@
     
     button { color: white; border: none; padding: 14px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: 700; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; }
     .btn-confirm { background: var(--primary); border: 1px solid var(--accent); }
-    .btn-toggle { background: #f1f5f9; color: var(--text-main); border: 1px solid var(--border); }
+    .btn-toggle { background: #f1f5f9; color: var(--text-main); border: 1px solid var(--border); transition: background 0.3s; }
     .btn-view { background: var(--purple); margin-top: 15px; }
 
     .status-badge { padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
@@ -115,7 +118,7 @@
       </div>
 
       <div class="box">
-        <button class="btn-toggle" onclick="toggleHistorico()"> MOSTRAR LANÇAMENTOS DO DIA</button>
+        <button class="btn-toggle" id="btnToggleHistorico" onclick="toggleHistorico()"> MOSTRAR LANÇAMENTOS DO DIA</button>
         <div id="areaHistorico" style="display:none;">
             <ul id="lista" style="padding:0; list-style:none; margin:15px 0;"></ul>
             <button id="btnAbrirRelatorio" class="btn-view hidden" onclick="abrirRelatorio()"> RELATÓRIO COMPLETO E FILTROS</button>
@@ -126,12 +129,12 @@
     <div id="modalRelatorio" class="modal">
         <div class="modal-content">
           <span style="float:right; cursor:pointer; font-weight:bold" onclick="fecharRelatorio()">FECHAR [X]</span>
-          <h2 style="margin-top:0">Solicitações</h2>
+          <h2 style="margin-top:0">Solicitações em Tempo Real</h2>
           <div class="box no-print" style="margin-top:0; background:#f8fafc">
             <div class="flex-row">
               <div style="flex:1">
                 <label>Filtrar Setor</label>
-                <select id="filtroSetorRelatorio" onchange="aplicarFiltroTabela()">
+                <select id="filtroSetorRelatorio" onchange="atualizarInterface()">
                   <option value="TODOS">Todos os Setores</option>
                   <option value="CONFEITARIA">Confeitaria</option>
                   <option value="COZINHA">Cozinha</option>
@@ -165,6 +168,21 @@
   </div>
 
   <script>
+    // --- 1. CONFIGURAÇÃO DO FIREBASE ---
+    const firebaseConfig = {
+      apiKey: "SUA_API_KEY_AQUI", 
+      authDomain: "estoque1908.firebaseapp.com",
+      databaseURL: "https://estoque1908-default-rtdb.firebaseio.com",
+      projectId: "estoque1908",
+      storageBucket: "estoque1908.appspot.com",
+      messagingSenderId: "SEU_SENDER_ID",
+      appId: "SEU_APP_ID"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // --- DADOS ---
     const ACESSOS = {
       "1908": { setor: "ADMIN", nome: "Administrador" },
       "1010": { setor: "CONFEITARIA", nome: "Confeitaria" },
@@ -183,7 +201,53 @@
     };
 
     let setorAtual = "";
+    let pedidosGeral = [];
+    let totalPedidosAnterior = -1;
 
+    // --- NOTIFICAÇÕES ---
+    function tocarAlertaSonoro() {
+        try {
+            const context = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(880, context.currentTime);
+            gain.gain.setValueAtTime(0.1, context.currentTime);
+            oscillator.connect(gain);
+            gain.connect(context.destination);
+            oscillator.start();
+            oscillator.stop(context.currentTime + 0.2);
+        } catch(e) { console.log("Áudio bloqueado pelo navegador"); }
+    }
+
+    function mostrarNotificacaoPush(titulo, corpo) {
+        if (Notification.permission === "granted") {
+            new Notification(titulo, { body: corpo, icon: 'images.png' });
+        }
+    }
+
+    // --- LOGICA DO FIREBASE ---
+    database.ref('pedidos_1908').on('value', (snapshot) => {
+        const data = snapshot.val();
+        const listaAtual = data ? Object.keys(data) : [];
+        const eAdmin = sessionStorage.getItem("setor_1908") === "ADMIN";
+
+        // Alerta de novo pedido para Admin
+        if (eAdmin && totalPedidosAnterior !== -1 && listaAtual.length > totalPedidosAnterior) {
+            tocarAlertaSonoro();
+            mostrarNotificacaoPush("🔔 Novo Pedido!", "Um novo item foi solicitado no estoque.");
+            const btn = document.getElementById('btnToggleHistorico');
+            btn.style.backgroundColor = "var(--orange)";
+            btn.style.color = "white";
+            setTimeout(() => { btn.style.backgroundColor = ""; btn.style.color = ""; }, 5000);
+        }
+
+        totalPedidosAnterior = listaAtual.length;
+        pedidosGeral = data ? Object.keys(data).map(key => ({...data[key], id: key})).reverse() : [];
+        atualizarInterface();
+    });
+
+    // --- FUNÇÕES DO SISTEMA ---
     function validarAcesso() {
       const senha = document.getElementById("senhaInput").value;
       const acesso = ACESSOS[senha];
@@ -200,12 +264,15 @@
       sessionStorage.setItem("logado_1908", "true");
       sessionStorage.setItem("setor_1908", acesso.setor);
       sessionStorage.setItem("nome_1908", acesso.nome);
+      
+      if (acesso.setor === "ADMIN" && Notification.permission !== "granted") {
+          Notification.requestPermission();
+      }
       aplicarPermissoes();
     }
 
     function aplicarPermissoes() {
       const setor = sessionStorage.getItem("setor_1908");
-      const nomeUser = sessionStorage.getItem("nome_1908");
       if (setor === "ADMIN") {
         document.getElementById("btnAbrirRelatorio").classList.remove("hidden");
         document.querySelectorAll(".admin-only").forEach(el => el.classList.remove("hidden"));
@@ -214,18 +281,9 @@
         document.querySelectorAll('.card').forEach(card => card.classList.add('hidden'));
         const cardSetor = document.getElementById("card-" + setor);
         if(cardSetor) cardSetor.classList.remove('hidden');
-        document.getElementById("solicitante").value = nomeUser;
+        document.getElementById("solicitante").value = sessionStorage.getItem("nome_1908");
         abrirFormulario(setor);
       }
-    }
-
-    function logout() { sessionStorage.clear(); location.reload(); }
-    function verificarEnter(e) { if (e.key === 'Enter') validarAcesso(); }
-
-    if (sessionStorage.getItem("logado_1908") === "true") {
-      document.getElementById("telaLogin").style.display = "none";
-      document.getElementById("conteudoSistema").style.display = "block";
-      aplicarPermissoes();
     }
 
     function abrirFormulario(setor) {
@@ -245,31 +303,13 @@
 
     function filtrarProdutos() { gerarOpcoesProdutos(document.getElementById("filtroProduto").value); }
 
-    // --- FUNÇÃO DE ALERTA SONORO ---
-    function dispararSomNotificacao() {
-      try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const oscillator = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // Nota Ré
-        oscillator.frequency.exponentialRampToValueAtTime(880.00, audioCtx.currentTime + 0.1); // Nota Lá
-        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-        oscillator.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + 0.2);
-      } catch(e) { console.log("Áudio bloqueado pelo navegador."); }
-    }
-
     function registrarSolicitacao() {
       const nome = document.getElementById("solicitante").value;
       const prod = document.getElementById("produtoSelect").value;
       const qtd = document.getElementById("quantidade").value;
       if (!nome || !prod || !qtd || qtd <= 0) return alert("⚠️ Preencha tudo!");
       
-      const nova = { 
-        id: Date.now(), 
+      const novoPedido = { 
         data: new Date().toLocaleDateString("pt-BR"), 
         hora: new Date().toLocaleTimeString("pt-BR", {hour: '2-digit', minute:'2-digit'}), 
         dataEntrega: "", 
@@ -280,96 +320,69 @@
         concluido: false 
       };
 
-      let hist = JSON.parse(localStorage.getItem("historico_1908")) || [];
-      hist.unshift(nova); 
-      localStorage.setItem("historico_1908", JSON.stringify(hist));
-      
-      alert(`✅ Pedido enviado!`);
-      document.getElementById("quantidade").value = "";
-      
-      // Atualiza a própria interface imediatamente
-      atualizarHistorico();
-      if (document.getElementById("modalRelatorio").style.display === "block") aplicarFiltroTabela();
-      
-      // Simula evento storage para a própria aba (Safari/Chrome fix)
-      window.dispatchEvent(new Event('storage'));
+      database.ref('pedidos_1908').push(novoPedido)
+        .then(() => {
+          alert(`✅ Pedido enviado!`);
+          document.getElementById("quantidade").value = "";
+        }).catch(err => alert("Erro: " + err));
     }
 
-    function toggleHistorico() {
-      const area = document.getElementById("areaHistorico");
-      area.style.display = area.style.display === "block" ? "none" : "block";
-      if (area.style.display === "block") atualizarHistorico();
-    }
-
-    function atualizarHistorico() {
-      const lista = document.getElementById("lista"); lista.innerHTML = "";
-      const hist = JSON.parse(localStorage.getItem("historico_1908")) || [];
+    function atualizarInterface() {
       const setorUser = sessionStorage.getItem("setor_1908");
-      hist.filter(i => setorUser === "ADMIN" || i.setor === setorUser).slice(0, 10).forEach(item => {
+      
+      const lista = document.getElementById("lista"); lista.innerHTML = "";
+      pedidosGeral.filter(i => setorUser === "ADMIN" || i.setor === setorUser).slice(0, 10).forEach(item => {
         const li = document.createElement("li");
         li.style = "display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee; background:#fff; margin-bottom:5px; border-radius:8px;";
         li.innerHTML = `<span><b>${item.produto}</b> (${item.quantidade})</span> <span class="status-badge ${item.concluido ? 'status-entregue' : 'status-pendente'}">${item.concluido ? 'Entregue' : 'Pendente'}</span>`;
         lista.appendChild(li);
       });
-    }
 
-    function abrirRelatorio() { aplicarFiltroTabela(); document.getElementById("modalRelatorio").style.display = "block"; }
-    function fecharRelatorio() { document.getElementById("modalRelatorio").style.display = "none"; }
-    
-    function aplicarFiltroTabela() {
       const setorFiltro = document.getElementById("filtroSetorRelatorio").value;
-      const hist = JSON.parse(localStorage.getItem("historico_1908")) || [];
       const corpo = document.getElementById("corpoTabela"); corpo.innerHTML = "";
-      hist.filter(i => setorFiltro === "TODOS" || i.setor === setorFiltro).forEach(item => {
+      pedidosGeral.filter(i => setorFiltro === "TODOS" || i.setor === setorFiltro).forEach(item => {
         const tr = document.createElement("tr");
         if(item.concluido) tr.classList.add("linha-concluida");
-        const entregaTxt = item.dataEntrega ? item.dataEntrega : "---";
         tr.innerHTML = `
           <td><span class="status-badge ${item.concluido ? 'status-entregue' : 'status-pendente'}">${item.concluido ? 'ENTREGUE' : 'PENDENTE'}</span></td>
-          <td>${item.data}</td>
-          <td>${entregaTxt}</td>
+          <td>${item.data} - ${item.hora}h</td>
+          <td>${item.dataEntrega || '---'}</td>
           <td><b>${item.setor}</b></td>
           <td>${item.solicitante}</td>
           <td class="prod-nome">${item.produto}</td>
           <td style="text-align:center">${item.quantidade}</td>
           <td class="no-print" style="text-align:center">
-            <button class="btn-acao" onclick="toggleConcluir(${item.id})">✅</button>
+            <button class="btn-acao" onclick="toggleConcluir('${item.id}')">✅</button>
           </td>`;
         corpo.appendChild(tr);
       });
     }
 
     function toggleConcluir(id) {
-      let hist = JSON.parse(localStorage.getItem("historico_1908"));
-      hist = hist.map(item => { 
-        if(item.id === id) { 
-          item.concluido = !item.concluido; 
-          item.dataEntrega = item.concluido ? new Date().toLocaleString("pt-BR", {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : ""; 
-        } 
-        return item; 
-      });
-      localStorage.setItem("historico_1908", JSON.stringify(hist)); 
-      aplicarFiltroTabela();
-      window.dispatchEvent(new Event('storage'));
+      const item = pedidosGeral.find(p => p.id === id);
+      const novoStatus = !item.concluido;
+      const dataEntrega = novoStatus ? new Date().toLocaleString("pt-BR", {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : "";
+      database.ref('pedidos_1908/' + id).update({ concluido: novoStatus, dataEntrega: dataEntrega });
     }
 
-    function limparHistorico() { if(confirm("Limpar tudo?")) { localStorage.removeItem("historico_1908"); aplicarFiltroTabela(); } }
+    function limparHistorico() {
+      if(confirm("Apagar tudo permanentemente?")) database.ref('pedidos_1908').remove();
+    }
 
-    // --- ESCUTADOR GLOBAL PARA SINCRONIZAÇÃO EM TEMPO REAL ---
-    window.addEventListener('storage', () => {
-      const setorLogado = sessionStorage.getItem("setor_1908");
-      
-      if (setorLogado === "ADMIN") {
-        dispararSomNotificacao();
-        atualizarHistorico();
-        if (document.getElementById("modalRelatorio").style.display === "block") {
-          aplicarFiltroTabela();
-        }
-      } else {
-        atualizarHistorico();
-      }
-    });
+    function toggleHistorico() {
+      const area = document.getElementById("areaHistorico");
+      area.style.display = area.style.display === "block" ? "none" : "block";
+    }
+    function abrirRelatorio() { atualizarInterface(); document.getElementById("modalRelatorio").style.display = "block"; }
+    function fecharRelatorio() { document.getElementById("modalRelatorio").style.display = "none"; }
+    function logout() { sessionStorage.clear(); location.reload(); }
+    function verificarEnter(e) { if (e.key === 'Enter') validarAcesso(); }
 
+    if (sessionStorage.getItem("logado_1908") === "true") {
+      document.getElementById("telaLogin").style.display = "none";
+      document.getElementById("conteudoSistema").style.display = "block";
+      aplicarPermissoes();
+    }
   </script>
 </body>
 </html>
